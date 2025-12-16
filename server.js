@@ -120,9 +120,25 @@ app.get('/api/whatsapp/status', (req, res) => {
         const status = connectionStatus.get(account_id) || { connected: false, phone: null };
         const client = whatsappClients.get(account_id);
 
-        // Double check client info
-        const connected = client?.info !== undefined;
-        const phone = connected ? client.info.wid.user : status.phone;
+                // Use the status from the map, which is updated by the ready/disconnected events
+        let connected = status.connected;
+        let phone = status.phone;
+
+        // If client exists but status is not connected, check client.info as a fallback
+        if (client && !connected) {
+            if (client.info) {
+                connected = true;
+                phone = client.info.wid.user;
+                // Update the map immediately if we find it's connected
+                connectionStatus.set(account_id, { connected: true, phone });
+                qrCodes.delete(account_id);
+            }
+        }
+
+        // If connected, ensure QR is null
+        if (connected) {
+            qr = null;
+        }
 
         res.json({
             qr,
@@ -171,6 +187,11 @@ app.post('/api/whatsapp/disconnect', async (req, res) => {
             return res.status(400).json({ error: 'Account ID required' });
         }
 
+        const client = whatsappClients.get(account_id);
+        if (client) {
+            // Attempt to logout from WhatsApp first
+            await client.logout();
+        }
         await cleanup(account_id);
         res.json({ success: true });
     } catch (error) {
@@ -184,9 +205,12 @@ async function cleanup(accountId) {
     try {
         const client = whatsappClients.get(accountId);
         if (client) {
-            try {
-                await client.logout(); // Logout from WhatsApp
-            } catch (e) { }
+            // client.logout() is now called in /api/whatsapp/disconnect
+            // The destroy() call below handles the session cleanup
+            // We keep the try/catch block for robustness, but remove the redundant logout call
+            // try {
+            //     await client.logout(); // Logout from WhatsApp
+            // } catch (e) { }
             try {
                 await client.destroy();
             } catch (e) { }
