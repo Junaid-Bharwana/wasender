@@ -80,9 +80,26 @@ app.post('/api/whatsapp/connect', async (req, res) => {
             connectionStatus.set(account_id, { connected: true, phone });
         });
 
+        // State change event - crucial for immediate status updates
+        client.on('state_change', (state) => {
+            console.log(`[${account_id}] State changed: ${state}`);
+            if (state === 'CONNECTED') {
+                const phone = client.info?.wid?.user || null;
+                connectionStatus.set(account_id, { connected: true, phone });
+                qrCodes.delete(account_id);
+            } else if (state === 'DISCONNECTED') {
+                connectionStatus.set(account_id, { connected: false, phone: null });
+                // Do not delete client here, let 'disconnected' event handle cleanup
+            }
+        });
+
         // Authenticated event
         client.on('authenticated', () => {
             console.log(`[${account_id}] Authenticated`);
+            // Set connected status immediately upon authentication
+            const phone = client.info?.wid?.user || null;
+            connectionStatus.set(account_id, { connected: true, phone });
+            qrCodes.delete(account_id);
         });
 
         // Auth failure
@@ -138,6 +155,13 @@ app.get('/api/whatsapp/status', (req, res) => {
         // If connected, ensure QR is null
         if (connected) {
             qr = null;
+        } else if (client && !qr) {
+            // If client exists but is not connected and no QR is available,
+            // it might be in an intermediate state. We can try to force a QR
+            // generation if the client is not ready, but this is complex.
+            // For now, we rely on the client.on('qr') event to populate it.
+            // However, if the client is not ready, we should not show a QR.
+            // The frontend should handle the 'connecting' state.
         }
 
         res.json({
