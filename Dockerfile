@@ -1,15 +1,12 @@
-# Use a Node image that includes Chrome dependencies
-FROM ghcr.io/puppeteer/puppeteer:latest
-
-# Switch to root to install any extra tools if needed (not needed here but good practice)
-USER root
+# Use a slim Node.js image (10x smaller than the Puppeteer one)
+FROM node:18-slim
 
 # Set working directory
 WORKDIR /app
 
 # Copy package files and install
 COPY package*.json ./
-RUN npm install
+RUN npm install --production
 
 # Copy the rest of your backend code
 COPY . .
