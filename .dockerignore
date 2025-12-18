@@ -1,0 +1,6 @@
+node_modules
+.wwebjs_auth
+.wwebjs_cache
+backend.zip
+npm-debug.log
+.DS_Store
