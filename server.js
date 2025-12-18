@@ -37,7 +37,7 @@ const qrCodes = new Map();
 const connectionStatus = new Map();
 
 // CONFIGURATION
-const PHP_API_URL = 'http://localhost/wa3/api.php'; // CHANGE THIS FOR LIVE HOSTING
+const PHP_API_URL = 'https://w.junaidinsights.com/api.php'; // CHANGE THIS FOR LIVE HOSTING
 const INTERNAL_SECRET = 'wa3_internal_secret_key_12345';
 
 // Helper to update PHP backend
@@ -477,3 +477,4 @@ app.listen(PORT, () => {
 ╚═══════════════════════════════════════════════════════════╝
     `);
 });
+
