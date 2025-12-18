@@ -14,12 +14,51 @@ app.use(cors({
 }));
 app.use(express.json());
 
+// Prevent server crash on Puppeteer errors
+process.on('unhandledRejection', (reason, promise) => {
+    const errorMsg = reason?.message || reason?.originalMessage || '';
+    if (errorMsg.includes('Session closed') || errorMsg.includes('Target closed') || errorMsg.includes('Execution context was destroyed')) {
+        // Ignore these common Puppeteer race condition errors during logout
+        return;
+    }
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+    console.error('Uncaught Exception:', error);
+    // Don't exit the process
+});
+
 // WhatsApp clients storage: Map<accountId, Client>
 const whatsappClients = new Map();
 // QR codes storage: Map<accountId, qrDataUrl>
 const qrCodes = new Map();
 // Connection status: Map<accountId, {connected, phone}>
 const connectionStatus = new Map();
+
+// CONFIGURATION
+const PHP_API_URL = 'http://localhost/wa3/api.php'; // CHANGE THIS FOR LIVE HOSTING
+const INTERNAL_SECRET = 'wa3_internal_secret_key_12345';
+
+// Helper to update PHP backend
+async function notifyPhpBackend(accountId, status, phone = null) {
+    try {
+        const url = `${PHP_API_URL}?action=internal_status_update`;
+        await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                secret: INTERNAL_SECRET,
+                account_id: accountId,
+                status,
+                phone
+            })
+        });
+        console.log(`[${accountId}] Notified PHP backend: ${status}`);
+    } catch (e) {
+        console.error(`[${accountId}] Failed to notify PHP backend:`, e.message);
+    }
+}
 
 // ============ WHATSAPP ROUTES ============
 
@@ -32,9 +71,11 @@ app.post('/api/whatsapp/connect', async (req, res) => {
             return res.status(400).json({ error: 'Account ID required' });
         }
 
+        const clientId = String(account_id);
+
         // Check if client already exists and is ready
-        if (whatsappClients.has(account_id)) {
-            const existingClient = whatsappClients.get(account_id);
+        if (whatsappClients.has(clientId)) {
+            const existingClient = whatsappClients.get(clientId);
             if (existingClient.info) {
                 return res.json({ success: true, connected: true, phone: existingClient.info.wid.user });
             }
@@ -42,7 +83,7 @@ app.post('/api/whatsapp/connect', async (req, res) => {
 
         // Create new WhatsApp client
         const client = new Client({
-            authStrategy: new LocalAuth({ clientId: account_id }),
+            authStrategy: new LocalAuth({ clientId: clientId }),
             puppeteer: {
                 headless: true,
                 args: [
@@ -51,21 +92,20 @@ app.post('/api/whatsapp/connect', async (req, res) => {
                     '--disable-dev-shm-usage',
                     '--disable-accelerated-2d-canvas',
                     '--no-first-run',
-                    '--no-zygote',
                     '--disable-gpu'
                 ]
             }
         });
 
-        whatsappClients.set(account_id, client);
-        connectionStatus.set(account_id, { connected: false, phone: null });
+        whatsappClients.set(clientId, client);
+        connectionStatus.set(clientId, { connected: false, phone: null });
 
         // QR Code event
         client.on('qr', async (qr) => {
             try {
                 const qrDataUrl = await QRCode.toDataURL(qr);
-                qrCodes.set(account_id, qrDataUrl);
-                console.log(`[${account_id}] QR generated`);
+                qrCodes.set(clientId, qrDataUrl);
+                console.log(`[${clientId}] QR generated`);
             } catch (err) {
                 console.error('QR generation error:', err);
             }
@@ -73,45 +113,36 @@ app.post('/api/whatsapp/connect', async (req, res) => {
 
         // Ready event
         client.on('ready', () => {
-            console.log(`[${account_id}] WhatsApp ready`);
-            qrCodes.delete(account_id);
+            console.log(`[${clientId}] WhatsApp ready`);
+            qrCodes.delete(clientId);
 
             const phone = client.info?.wid?.user || null;
-            connectionStatus.set(account_id, { connected: true, phone });
-        });
+            connectionStatus.set(clientId, { connected: true, phone });
 
-        // State change event - crucial for immediate status updates
-        client.on('state_change', (state) => {
-            console.log(`[${account_id}] State changed: ${state}`);
-            if (state === 'CONNECTED') {
-                const phone = client.info?.wid?.user || null;
-                connectionStatus.set(account_id, { connected: true, phone });
-                qrCodes.delete(account_id);
-            } else if (state === 'DISCONNECTED') {
-                connectionStatus.set(account_id, { connected: false, phone: null });
-                // Do not delete client here, let 'disconnected' event handle cleanup
-            }
+            // Sync with PHP
+            notifyPhpBackend(clientId, 'connected', phone);
         });
 
         // Authenticated event
         client.on('authenticated', () => {
-            console.log(`[${account_id}] Authenticated`);
-            // Set connected status immediately upon authentication
-            const phone = client.info?.wid?.user || null;
-            connectionStatus.set(account_id, { connected: true, phone });
-            qrCodes.delete(account_id);
+            console.log(`[${clientId}] Authenticated`);
+            // Update status to show "Authenticating..." on frontend
+            const current = connectionStatus.get(clientId) || { connected: false, phone: null };
+            connectionStatus.set(clientId, { ...current, authenticating: true });
         });
 
         // Auth failure
         client.on('auth_failure', (msg) => {
-            console.error(`[${account_id}] Auth failure:`, msg);
-            cleanup(account_id);
+            console.error(`[${clientId}] Auth failure:`, msg);
+            cleanup(clientId);
         });
 
         // Disconnected event
         client.on('disconnected', (reason) => {
-            console.log(`[${account_id}] Disconnected:`, reason);
-            cleanup(account_id);
+            console.log(`[${clientId}] Disconnected:`, reason);
+            cleanup(clientId);
+            // Sync with PHP
+            notifyPhpBackend(clientId, 'disconnected');
         });
 
         // Initialize client
@@ -133,40 +164,21 @@ app.get('/api/whatsapp/status', (req, res) => {
             return res.status(400).json({ error: 'Account ID required' });
         }
 
-        const qr = qrCodes.get(account_id) || null;
-        const status = connectionStatus.get(account_id) || { connected: false, phone: null };
-        const client = whatsappClients.get(account_id);
+        const clientId = String(account_id);
 
-                // Use the status from the map, which is updated by the ready/disconnected events
-        let connected = status.connected;
-        let phone = status.phone;
+        const qr = qrCodes.get(clientId) || null;
+        const status = connectionStatus.get(clientId) || { connected: false, phone: null };
+        const client = whatsappClients.get(clientId);
 
-        // If client exists but status is not connected, check client.info as a fallback
-        if (client && !connected) {
-            if (client.info) {
-                connected = true;
-                phone = client.info.wid.user;
-                // Update the map immediately if we find it's connected
-                connectionStatus.set(account_id, { connected: true, phone });
-                qrCodes.delete(account_id);
-            }
-        }
-
-        // If connected, ensure QR is null
-        if (connected) {
-            qr = null;
-        } else if (client && !qr) {
-            // If client exists but is not connected and no QR is available,
-            // it might be in an intermediate state. We can try to force a QR
-            // generation if the client is not ready, but this is complex.
-            // For now, we rely on the client.on('qr') event to populate it.
-            // However, if the client is not ready, we should not show a QR.
-            // The frontend should handle the 'connecting' state.
-        }
+        // Double check client info
+        const connected = client?.info !== undefined;
+        const phone = connected ? client.info.wid.user : status.phone;
+        const authenticating = status.authenticating || false;
 
         res.json({
             qr,
             connected,
+            authenticating,
             phone
         });
     } catch (error) {
@@ -184,7 +196,9 @@ app.post('/api/whatsapp/send', async (req, res) => {
             return res.status(400).json({ error: 'Account ID, phone, and message required' });
         }
 
-        const client = whatsappClients.get(account_id);
+        const clientId = String(account_id);
+
+        const client = whatsappClients.get(clientId);
         if (!client || !client.info) {
             return res.status(400).json({ error: 'WhatsApp not connected' });
         }
@@ -202,6 +216,142 @@ app.post('/api/whatsapp/send', async (req, res) => {
     }
 });
 
+// Check existence of numbers (Batch)
+app.post('/api/whatsapp/check-numbers', async (req, res) => {
+    try {
+        const { account_id, numbers } = req.body;
+
+        if (!account_id || !Array.isArray(numbers)) {
+            return res.status(400).json({ error: 'Account ID and numbers array required' });
+        }
+
+        const clientId = String(account_id);
+
+        const client = whatsappClients.get(clientId);
+        if (!client || !client.info) {
+            return res.status(400).json({ error: 'WhatsApp not connected' });
+        }
+
+        const results = [];
+
+        // Process in chunks to avoid overwhelming
+        for (const number of numbers) {
+            try {
+                // Remove non-digit chars
+                const cleanNumber = number.toString().replace(/\D/g, '');
+                if (!cleanNumber) {
+                    results.push({ input: number, valid: false, reason: 'Empty' });
+                    continue;
+                }
+
+                // Check if registered
+                const registered = await client.getNumberId(cleanNumber);
+
+                if (registered) {
+                    results.push({
+                        input: number,
+                        valid: true,
+                        formatted: registered.user,
+                        serialized: registered._serialized
+                    });
+                } else {
+                    results.push({ input: number, valid: false, reason: 'Not on WhatsApp' });
+                }
+            } catch (e) {
+                results.push({ input: number, valid: false, reason: 'Error checking' });
+            }
+        }
+
+        res.json({ success: true, results });
+    } catch (error) {
+        console.error('Check numbers error:', error);
+        res.status(500).json({ error: 'Failed to check numbers' });
+    }
+});
+
+// Get Groups
+app.get('/api/whatsapp/groups', async (req, res) => {
+    try {
+        const { account_id } = req.query;
+        if (!account_id) return res.status(400).json({ error: 'Account ID required' });
+
+        const clientId = String(account_id);
+
+        const client = whatsappClients.get(clientId);
+        if (!client || !client.info) return res.status(400).json({ error: 'WhatsApp not connected' });
+
+        // Retry logic for getChats to handle "Evaluation failed"
+        let chats;
+        let attempts = 0;
+        while (attempts < 3) {
+            try {
+                // Abort if client was disconnected during retry wait
+                if (!whatsappClients.has(clientId)) {
+                    throw new Error('Client disconnected');
+                }
+
+                chats = await client.getChats();
+                break;
+            } catch (e) {
+                // Ignore session closed errors if we are disconnecting
+                if (e.message.includes('Session closed')) {
+                    throw new Error('Client disconnected during request');
+                }
+
+                attempts++;
+                if (attempts >= 3) throw e;
+                console.log(`[${clientId}] Retrying getChats (${attempts}/3)...`);
+                await new Promise(r => setTimeout(r, 1000));
+            }
+        }
+
+        const groups = chats
+            .filter(chat => chat.isGroup)
+            .map(chat => ({
+                id: chat.id._serialized,
+                name: chat.name,
+                participantCount: chat.participants.length,
+                unreadCount: chat.unreadCount
+            }));
+
+        res.json({ success: true, groups });
+    } catch (error) {
+        // Don't log expected disconnect errors
+        if (error.message !== 'Client disconnected' && error.message !== 'Client disconnected during request') {
+            console.error('Get groups error:', error);
+        }
+        res.status(500).json({ error: 'Failed to fetch groups' });
+    }
+});
+
+// Get Group Participants
+app.get('/api/whatsapp/group-participants', async (req, res) => {
+    try {
+        const { account_id, group_id } = req.query;
+        if (!account_id || !group_id) return res.status(400).json({ error: 'Account ID and Group ID required' });
+
+        const clientId = String(account_id);
+
+        const client = whatsappClients.get(clientId);
+        if (!client || !client.info) return res.status(400).json({ error: 'WhatsApp not connected' });
+
+        const chat = await client.getChatById(group_id);
+        if (!chat || !chat.isGroup) return res.status(404).json({ error: 'Group not found' });
+
+        const participants = chat.participants.map(p => ({
+            id: p.id._serialized,
+            user: p.id.user,
+            isAdmin: p.isAdmin,
+            isSuperAdmin: p.isSuperAdmin
+        }));
+
+        res.json({ success: true, participants });
+    } catch (error) {
+        console.error('Get participants error:', error);
+        res.status(500).json({ error: 'Failed to fetch participants' });
+    }
+});
+
 // Disconnect account
 app.post('/api/whatsapp/disconnect', async (req, res) => {
     try {
@@ -211,12 +361,15 @@ app.post('/api/whatsapp/disconnect', async (req, res) => {
             return res.status(400).json({ error: 'Account ID required' });
         }
 
-        const client = whatsappClients.get(account_id);
-        if (client) {
-            // Attempt to logout from WhatsApp first
-            await client.logout();
-        }
-        await cleanup(account_id);
+        const clientId = String(account_id);
+
+        // Delegate entire process to cleanup to avoid race conditions
+        console.log(`[${clientId}] Disconnect requested via API`);
+        await cleanup(clientId);
+
+        // Also ensure PHP is updated
+        notifyPhpBackend(clientId, 'disconnected');
+
         res.json({ success: true });
     } catch (error) {
         console.error('Disconnect error:', error);
@@ -226,36 +379,56 @@ app.post('/api/whatsapp/disconnect', async (req, res) => {
 
 // Cleanup function - fully removes WhatsApp session
 async function cleanup(accountId) {
+    const clientId = String(accountId);
     try {
-        const client = whatsappClients.get(accountId);
+        const client = whatsappClients.get(clientId);
         if (client) {
-            // client.logout() is now called in /api/whatsapp/disconnect
-            // The destroy() call below handles the session cleanup
-            // We keep the try/catch block for robustness, but remove the redundant logout call
-            // try {
-            //     await client.logout(); // Logout from WhatsApp
-            // } catch (e) { }
             try {
+                // Attempt to logout first
+                // This ensures the session is invalidated on the phone
+                await client.logout();
+                console.log(`[${clientId}] Logged out from WhatsApp Web`);
+            } catch (e) {
+                console.warn(`[${clientId}] Logout failed:`, e.message);
+            }
+
+            // CRITICAL: Wait longer for logout network packet to be fully processed
+            await new Promise(resolve => setTimeout(resolve, 3000));
+
+            try {
+                // Then destroy the browser
                 await client.destroy();
             } catch (e) { }
+
+            // CRITICAL: Wait for file locks to be released on Windows
+            // Chrome takes a moment to release handle on debug.log and cache files
+            await new Promise(resolve => setTimeout(resolve, 2500));
         }
     } catch (e) { }
 
-    whatsappClients.delete(accountId);
-    qrCodes.delete(accountId);
-    connectionStatus.set(accountId, { connected: false, phone: null });
+    whatsappClients.delete(clientId);
+    qrCodes.delete(clientId);
+    connectionStatus.set(clientId, { connected: false, phone: null });
 
-    // Try to delete session files
+    // Try to delete session files with native retry
     const fs = require('fs');
     const path = require('path');
-    const sessionPath = path.join(__dirname, '.wwebjs_auth', `session-${accountId}`);
+    const sessionPath = path.join(__dirname, '.wwebjs_auth', `session-${clientId}`);
     try {
         if (fs.existsSync(sessionPath)) {
-            fs.rmSync(sessionPath, { recursive: true, force: true });
-            console.log(`[${accountId}] Session files deleted`);
+            // maxRetries helps with EBUSY/EPERM on Windows
+            fs.rmSync(sessionPath, {
+                recursive: true,
+                force: true,
+                maxRetries: 5,
+                retryDelay: 1000
+            });
+            console.log(`[${clientId}] Session files deleted`);
         }
     } catch (e) {
-        console.log(`[${accountId}] Could not delete session files:`, e.message);
+        // If it still fails, just log it. It's not critical for server operation.
+        // It might be cleaned up on next restart or manual deletion.
+        console.log(`[${clientId}] Note: Could not delete session files (likely locked):`, e.message);
     }
 }
 
