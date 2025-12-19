@@ -32,7 +32,7 @@ const qrCodes = new Map();
 const connectionStatus = new Map();
 
 // CONFIGURATION
-const PHP_API_URL = 'https://w.junaidinsights.com/api.php'; // CHANGE THIS FOR LIVE HOSTING
+const PHP_API_URL = 'http://localhost/wa3/api.php'; // CHANGE THIS FOR LIVE HOSTING
 const INTERNAL_SECRET = 'wa3_internal_secret_key_12345';
 
 // Logger
@@ -137,6 +137,94 @@ async function startSession(accountId) {
 }
 
 // ============ WHATSAPP ROUTES ============
+
+app.get('/', (req, res) => {
+    const sessionCount = sessions.size;
+    res.send(`
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>WhatsApp Backend Status</title>
+            <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+            <style>
+                :root {
+                    --bg: #0f172a;
+                    --card: #1e293b;
+                    --text: #f8fafc;
+                    --primary: #10b981;
+                }
+                body {
+                    font-family: 'Inter', sans-serif;
+                    background-color: var(--bg);
+                    color: var(--text);
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    height: 100vh;
+                    margin: 0;
+                }
+                .card {
+                    background: var(--card);
+                    padding: 2rem;
+                    border-radius: 1rem;
+                    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+                    text-align: center;
+                    max-width: 400px;
+                    width: 90%;
+                    border: 1px solid rgba(255,255,255,0.1);
+                }
+                h1 { margin: 0 0 1rem; font-size: 1.5rem; }
+                .status {
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 0.5rem;
+                    background: rgba(16, 185, 129, 0.1);
+                    color: var(--primary);
+                    padding: 0.5rem 1rem;
+                    border-radius: 2rem;
+                    font-weight: 600;
+                    margin-bottom: 1.5rem;
+                }
+                .dot {
+                    width: 10px;
+                    height: 10px;
+                    background: var(--primary);
+                    border-radius: 50%;
+                    box-shadow: 0 0 10px var(--primary);
+                    animation: pulse 2s infinite;
+                }
+                @keyframes pulse {
+                    0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+                    70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }
+                    100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+                }
+                .stats {
+                    font-size: 0.9rem;
+                    color: #94a3b8;
+                    border-top: 1px solid rgba(255,255,255,0.1);
+                    padding-top: 1rem;
+                }
+                strong { color: var(--text); }
+            </style>
+        </head>
+        <body>
+            <div class="card">
+                <div class="status">
+                    <span class="dot"></span>
+                    Server is Online
+                </div>
+                <h1>WhatsApp Backend</h1>
+                <div class="stats">
+                    Active Sessions: <strong>${sessionCount}</strong><br>
+                    Uptime: <strong>${Math.floor(process.uptime() / 60)} minutes</strong>
+                </div>
+            </div>
+        </body>
+        </html>
+    `);
+});
 
 app.post('/api/whatsapp/connect', async (req, res) => {
     try {
@@ -304,5 +392,4 @@ process.on('uncaughtException', (err, origin) => {
 
 app.listen(PORT, () => {
     console.log(`WhatsApp Sender (Baileys) running on port ${PORT}`);
-
 });
