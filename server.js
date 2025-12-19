@@ -42,7 +42,9 @@ const logger = pino({ level: 'silent' });
 async function notifyPhpBackend(accountId, status, phone = null) {
     try {
         const url = `${PHP_API_URL}?action=internal_status_update`;
-        await fetch(url, {
+        console.log(`[${accountId}] Notifying PHP: ${status} at ${url}`);
+
+        const response = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -52,9 +54,18 @@ async function notifyPhpBackend(accountId, status, phone = null) {
                 phone
             })
         });
-        console.log(`[${accountId}] Notified PHP backend: ${status}`);
+
+        if (!response.ok) {
+            const text = await response.text();
+            console.error(`[${accountId}] PHP Error (${response.status}): ${text.substring(0, 200)}`);
+        } else {
+            console.log(`[${accountId}] Notified PHP backend: ${status}`);
+        }
     } catch (e) {
         console.error(`[${accountId}] Failed to notify PHP backend:`, e.message);
+        if (e.message.includes('fetch failed')) {
+            console.error(`[${accountId}] TIP: Check if PHP_API_URL (${PHP_API_URL}) is accessible from the Node.js environment.`);
+        }
     }
 }
 
@@ -280,6 +291,15 @@ app.post('/api/whatsapp/disconnect', async (req, res) => {
 
 app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', activeSessions: sessions.size });
+});
+
+// Process handlers to prevent crashes
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (err, origin) => {
+    console.error('Uncaught Exception:', err, 'at:', origin);
 });
 
 app.listen(PORT, () => {

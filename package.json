@@ -1,7 +1,7 @@
 {
   "name": "whatsapp-sender-backend",
   "version": "1.0.0",
-  "description": "WhatsApp Sender Backend with whatsapp-web.js",
+  "description": "WhatsApp Sender Backend with Baileys",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
