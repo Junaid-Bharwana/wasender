@@ -113,7 +113,8 @@ async function startSession(accountId) {
             connectionStatus.set(clientId, { connected: false, phone: null });
 
             if (shouldReconnect) {
-                startSession(clientId);
+                console.log(`[${clientId}] Reconnecting in 5 seconds...`);
+                setTimeout(() => startSession(clientId), 5000);
             } else {
                 sessions.delete(clientId);
                 notifyPhpBackend(clientId, 'disconnected');
@@ -346,12 +347,20 @@ app.get('/api/whatsapp/group-participants', async (req, res) => {
         if (!sock) return res.status(400).json({ error: 'Not connected' });
 
         const metadata = await sock.groupMetadata(group_id);
-        const participants = metadata.participants.map(p => ({
-            id: p.id,
-            user: p.id.split('@')[0],
-            isAdmin: p.admin === 'admin',
-            isSuperAdmin: p.admin === 'superadmin'
-        }));
+        const participants = metadata.participants.map(p => {
+            // Standard JID: number@s.whatsapp.net or number:suffix@s.whatsapp.net
+            // LID: lid-number@s.whatsapp.net
+            let user = p.id.split('@')[0];
+            if (user.includes(':')) user = user.split(':')[0]; // Remove device suffix
+            if (user.startsWith('lid-')) user = user.replace('lid-', ''); // Remove lid prefix
+
+            return {
+                id: p.id,
+                user: user,
+                isAdmin: p.admin === 'admin',
+                isSuperAdmin: p.admin === 'superadmin'
+            };
+        });
 
         res.json({ success: true, participants });
     } catch (error) {
