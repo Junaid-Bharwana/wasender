@@ -357,7 +357,8 @@ app.get('/api/whatsapp/group-participants', async (req, res) => {
             return {
                 id: p.id,
                 user: user,
-                isAdmin: p.admin === 'admin',
+                name: p.notify || '', // Use pushname/notify name if available
+                isAdmin: p.admin === 'admin' || p.admin === 'superadmin', // Include superadmins
                 isSuperAdmin: p.admin === 'superadmin'
             };
         });
