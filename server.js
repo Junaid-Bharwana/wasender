@@ -32,7 +32,7 @@ const qrCodes = new Map();
 const connectionStatus = new Map();
 
 // CONFIGURATION
-const PHP_API_URL = 'https://w.junaidinsights.com/api.php'; // CHANGE THIS FOR LIVE HOSTING
+const PHP_API_URL = 'http://localhost/wa3/api.php'; // CHANGE THIS FOR LIVE HOSTING
 const INTERNAL_SECRET = 'wa3_internal_secret_key_12345';
 
 // Logger
@@ -390,7 +390,34 @@ process.on('uncaughtException', (err, origin) => {
     console.error('Uncaught Exception:', err, 'at:', origin);
 });
 
+// Initialize existing sessions from disk
+async function initSessions() {
+    const authDir = path.join(__dirname, 'data', 'auth');
+    console.log('Checking for existing sessions in:', authDir);
+
+    if (!fs.existsSync(authDir)) {
+        console.log('No auth directory found, skipping session initialization.');
+        return;
+    }
+
+    try {
+        const folders = fs.readdirSync(authDir);
+        for (const folder of folders) {
+            if (folder.startsWith('session-')) {
+                const clientId = folder.replace('session-', '');
+                console.log(`[Startup] Restoring session: ${clientId}`);
+                // Don't await here to allow concurrent loading
+                startSession(clientId).catch(err => {
+                    console.error(`[Startup] Failed to restore session ${clientId}:`, err.message);
+                });
+            }
+        }
+    } catch (err) {
+        console.error('Failed to read auth directory:', err.message);
+    }
+}
+
 app.listen(PORT, () => {
     console.log(`WhatsApp Sender (Baileys) running on port ${PORT}`);
-
+    initSessions();
 });
